@@ -96,17 +96,87 @@ class DSUServer:
         # Bit 8-11: L2, R2, L1, R1
         # Bit 12-15: Triangle, Circle, Cross, Square
         
-        buttons = 0x0000
-        # Simple mapping for testing:
-        # Trigger -> Cross (X)
-        # Throttle Buttons -> L1/R1
+        # Current 'buttons' from InputReader is a raw bitmask from the device.
+        # We need to map it to DSU buttons.
+        # Let's assume a simple mapping for now, similar to BrowserBridge.
         
+        btn1 = self.state.get('buttons', 0)
+        thr_btns = self.state.get('thr_buttons', 0)
+        
+        # Helper
+        def is_pressed(mask, val):
+            return (val & mask) > 0
+            
+        dsu_buttons = 0x0000
+        
+        # Load Mapping
+        import json
+        import os
+        MAPPING = {}
+        try:
+            if os.path.exists('button_mapping.json'):
+                with open('button_mapping.json', 'r') as f:
+                    MAPPING = json.load(f)
+        except:
+            pass
+            
+        # Default Fallback
+        if not MAPPING:
+             MAPPING = {
+                'A': ['joy', 0x01], 'B': ['joy', 0x02], 'X': ['joy', 0x04], 'Y': ['joy', 0x08],
+                'LB': ['joy', 0x40], 'RB': ['joy', 0x100],
+                'Back': ['thr', 0x00800000], 'Start': ['thr', 0x02000000], 'Guide': ['thr', 0x00400000],
+                'L3': ['thr', 0x00100000], 'R3': ['thr', 0x00000001]
+            }
+
+        # DSU Protocol Button Definitions
+        DSU_MAP = {
+            'A': 0x4000,      # Cross
+            'B': 0x2000,      # Circle
+            'X': 0x8000,      # Square
+            'Y': 0x1000,      # Triangle
+            'LB': 0x0400,     # L1
+            'RB': 0x0800,     # R1
+            'Back': 0x0001,   # Share
+            'Start': 0x0008,  # Options
+            'Guide': 0x0010,  # PS
+            'L3': 0x0002,     # L3
+            'R3': 0x0004      # R3
+        }
+
+        joy_btns = self.state.get('buttons', 0)
+        thr_btns = self.state.get('thr_buttons', 0)
+
+        for btn_name, dsu_mask in DSU_MAP.items():
+            if btn_name in MAPPING:
+                val_data = MAPPING[btn_name]
+                source = val_data[0]
+                mask = val_data[1]
+                val = joy_btns if source == 'joy' else thr_btns
+                
+                if (val & mask) > 0:
+                    dsu_buttons |= dsu_mask
+        
+        # L2 (0x0100), R2 (0x0200) - Digital triggers (Keep these separate as they are axes)
+        if self.state.get('throttle_left', 0) > 0.5: dsu_buttons |= 0x0100
+        if self.state.get('throttle_right', 0) > 0.5: dsu_buttons |= 0x0200
+
+        # D-Pad (Hat)
+        # DSU D-Pad: Up(0x10), Right(0x20), Down(0x40), Left(0x80)
+        hat = self.state.get('hat', -1)
+        if hat == 0 or hat == 1 or hat == 7: dsu_buttons |= 0x0010 # Up
+        if hat == 1 or hat == 2 or hat == 3: dsu_buttons |= 0x0020 # Right
+        if hat == 3 or hat == 4 or hat == 5: dsu_buttons |= 0x0040 # Down
+        if hat == 5 or hat == 6 or hat == 7: dsu_buttons |= 0x0080 # Left
+
         # Axes: 0-255. 128 is center.
         # Joy X/Y (-1.0 to 1.0) -> 0-255
         lx = int((self.state.get('joy_x', 0) + 1.0) * 127.5)
-        ly = int((self.state.get('joy_y', 0) + 1.0) * 127.5) # Invert Y?
-        rx = 128
-        ry = 128
+        ly = int((self.state.get('joy_y', 0) + 1.0) * 127.5)
+        
+        # Right Stick (Slew)
+        rx = int((self.state.get('slew_x', 0) + 1.0) * 127.5)
+        ry = int((self.state.get('slew_y', 0) + 1.0) * 127.5)
 
         # Throttle -> L2/R2 (0-255)
         l2 = int(self.state.get('throttle_left', 0) * 255)
@@ -122,7 +192,7 @@ class DSUServer:
         payload.append(1) # Active
         payload.extend(struct.pack('<I', int(time.time() * 1000))) # Packet No
         
-        payload.extend(struct.pack('<H', buttons))
+        payload.extend(struct.pack('<H', dsu_buttons))
         payload.append(0) # PS Button
         payload.append(0) # Touch
 

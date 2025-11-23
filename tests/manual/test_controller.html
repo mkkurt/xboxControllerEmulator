@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xbox Controller Tester</title>
+    <style>
+        body {
+            background: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        h1 { font-weight: 300; letter-spacing: 1px; margin-bottom: 10px; }
+
+        .container {
+            position: relative;
+            width: 800px;
+            height: 550px;
+        }
+
+        /* SVG Styles */
+        svg {
+            width: 100%;
+            height: 100%;
+            filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5));
+        }
+
+        .controller-body { fill: #2a2a2a; stroke: #1a1a1a; stroke-width: 2; }
+        .btn-shape { fill: #333; stroke: #111; stroke-width: 1; transition: fill 0.1s; }
+        .btn-shape.active { fill: #fff; }
+        
+        /* Specific Button Colors */
+        #btn-a.active { fill: #4caf50; }
+        #btn-b.active { fill: #f44336; }
+        #btn-x.active { fill: #2196f3; }
+        #btn-y.active { fill: #ffeb3b; }
+
+        .stick-base { fill: #1a1a1a; stroke: #000; }
+        .stick-head { fill: #333; stroke: #111; stroke-width: 2; transition: transform 0.05s linear; }
+        .stick-head.pressed { fill: #555; }
+
+        .dpad-path { fill: #333; }
+        .dpad-path.active { fill: #4caf50; }
+
+        .trigger-meter { fill: #4caf50; opacity: 0.8; }
+        
+        .status-bar {
+            margin-top: 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            background: #1e1e1e;
+            padding: 10px 20px;
+            border-radius: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        .status-dot {
+            width: 12px; height: 12px; border-radius: 50%; background: #555;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+        }
+        .status-dot.connected { background: #00e676; box-shadow: 0 0 10px #00e676; }
+
+        #debug-output {
+            position: absolute;
+            top: 20px; right: 20px;
+            width: 300px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            font-family: monospace;
+            font-size: 11px;
+            border-radius: 5px;
+            display: none;
+            pointer-events: none;
+        }
+        body.show-debug #debug-output { display: block; }
+    </style>
+</head>
+<body>
+
+    <h1>Xbox Controller Tester</h1>
+
+    <div class="container">
+        <svg viewBox="0 0 800 550" xmlns="http://www.w3.org/2000/svg">
+            <!-- Controller Body Shape -->
+            <path class="controller-body" d="M 220 100 C 220 100 280 60 400 60 C 520 60 580 100 580 100 C 630 100 700 120 720 200 C 740 280 720 400 650 480 C 600 540 550 450 550 450 C 550 450 500 480 400 480 C 300 480 250 450 250 450 C 250 450 200 540 150 480 C 80 400 60 280 80 200 C 100 120 170 100 220 100 Z" />
+            
+            <!-- Bumpers -->
+            <path id="btn-lb" class="btn-shape" d="M 160 110 Q 220 90 300 110 L 300 140 Q 220 120 160 140 Z" />
+            <path id="btn-rb" class="btn-shape" d="M 500 110 Q 580 90 640 110 L 640 140 Q 580 120 500 140 Z" />
+
+            <!-- Triggers (Visualized as meters behind/above) -->
+            <rect x="180" y="40" width="100" height="10" fill="#333" rx="5" />
+            <rect id="trig-l-meter" class="trigger-meter" x="180" y="40" width="0" height="10" rx="5" />
+            
+            <rect x="520" y="40" width="100" height="10" fill="#333" rx="5" />
+            <rect id="trig-r-meter" class="trigger-meter" x="520" y="40" width="0" height="10" rx="5" />
+
+            <!-- Left Stick -->
+            <circle class="stick-base" cx="220" cy="220" r="45" />
+            <circle id="stick-l" class="stick-head" cx="220" cy="220" r="30" />
+
+            <!-- Right Stick -->
+            <circle class="stick-base" cx="500" cy="320" r="45" />
+            <circle id="stick-r" class="stick-head" cx="500" cy="320" r="30" />
+
+            <!-- D-Pad -->
+            <g transform="translate(300, 320)">
+                <path id="dp-u" class="dpad-path" d="M -15 -45 L 15 -45 L 15 -15 L -15 -15 Z" />
+                <path id="dp-d" class="dpad-path" d="M -15 15 L 15 15 L 15 45 L -15 45 Z" />
+                <path id="dp-l" class="dpad-path" d="M -45 -15 L -15 -15 L -15 15 L -45 15 Z" />
+                <path id="dp-r" class="dpad-path" d="M 15 -15 L 45 -15 L 45 15 L 15 15 Z" />
+            </g>
+
+            <!-- Face Buttons -->
+            <g transform="translate(580, 220)">
+                <circle id="btn-y" class="btn-shape" cx="0" cy="-40" r="18" />
+                <circle id="btn-x" class="btn-shape" cx="-40" cy="0" r="18" />
+                <circle id="btn-b" class="btn-shape" cx="40" cy="0" r="18" />
+                <circle id="btn-a" class="btn-shape" cx="0" cy="40" r="18" />
+                
+                <text x="0" y="-35" text-anchor="middle" fill="#999" font-size="12" font-weight="bold">Y</text>
+                <text x="-40" y="5" text-anchor="middle" fill="#999" font-size="12" font-weight="bold">X</text>
+                <text x="40" y="5" text-anchor="middle" fill="#999" font-size="12" font-weight="bold">B</text>
+                <text x="0" y="45" text-anchor="middle" fill="#999" font-size="12" font-weight="bold">A</text>
+            </g>
+
+            <!-- Center Buttons -->
+            <circle id="btn-guide" class="btn-shape" cx="400" cy="200" r="25" />
+            <circle id="btn-back" class="btn-shape" cx="330" cy="200" r="10" />
+            <circle id="btn-start" class="btn-shape" cx="470" cy="200" r="10" />
+            
+            <!-- Labels -->
+            <text x="400" y="205" text-anchor="middle" fill="#555" font-size="20">X</text>
+            <text x="330" y="185" text-anchor="middle" fill="#555" font-size="10">BACK</text>
+            <text x="470" y="185" text-anchor="middle" fill="#555" font-size="10">START</text>
+        </svg>
+    </div>
+
+    <div class="status-bar">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text">Waiting for connection...</span>
+        <div style="width: 20px;"></div>
+        <label style="font-size: 14px; cursor: pointer;">
+            <input type="checkbox" id="debug-toggle"> Debug Mode
+        </label>
+    </div>
+
+    <div id="debug-output"></div>
+
+    <script>
+        const ws = new WebSocket('ws://127.0.0.1:8765');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const debugOutput = document.getElementById('debug-output');
+        const debugToggle = document.getElementById('debug-toggle');
+
+        debugToggle.addEventListener('change', (e) => {
+            if(e.target.checked) document.body.classList.add('show-debug');
+            else document.body.classList.remove('show-debug');
+        });
+
+        ws.onopen = () => {
+            statusDot.classList.add('connected');
+            statusText.textContent = "Connected";
+        };
+
+        ws.onclose = () => {
+            statusDot.classList.remove('connected');
+            statusText.textContent = "Disconnected";
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (debugToggle.checked) {
+                debugOutput.textContent = JSON.stringify(data, null, 2);
+            }
+
+            updateController(data);
+        };
+
+        function updateController(data) {
+            const axes = data.axes;
+            const btns = data.buttons;
+
+            // Sticks (Range -1 to 1, move by +/- 15px)
+            setStick('stick-l', axes[0], axes[1], 220, 220);
+            setStick('stick-r', axes[2], axes[3], 500, 320);
+
+            // Stick Clicks
+            setStickClick('stick-l', btns[10].pressed);
+            setStickClick('stick-r', btns[11].pressed);
+
+            // Triggers
+            document.getElementById('trig-l-meter').setAttribute('width', btns[6].value * 100);
+            document.getElementById('trig-r-meter').setAttribute('width', btns[7].value * 100);
+
+            // Buttons
+            setBtn('btn-a', btns[0].pressed);
+            setBtn('btn-b', btns[1].pressed);
+            setBtn('btn-x', btns[2].pressed);
+            setBtn('btn-y', btns[3].pressed);
+            setBtn('btn-lb', btns[4].pressed);
+            setBtn('btn-rb', btns[5].pressed);
+            setBtn('btn-back', btns[8].pressed);
+            setBtn('btn-start', btns[9].pressed);
+            setBtn('btn-guide', btns[16].pressed);
+
+            // D-Pad
+            setBtn('dp-u', btns[12].pressed);
+            setBtn('dp-d', btns[13].pressed);
+            setBtn('dp-l', btns[14].pressed);
+            setBtn('dp-r', btns[15].pressed);
+        }
+
+        function setStick(id, x, y, cx, cy) {
+            const el = document.getElementById(id);
+            const maxDist = 25;
+            el.setAttribute('cx', cx + x * maxDist);
+            el.setAttribute('cy', cy + y * maxDist);
+        }
+
+        function setStickClick(id, pressed) {
+            const el = document.getElementById(id);
+            if (pressed) el.classList.add('pressed');
+            else el.classList.remove('pressed');
+        }
+
+        function setBtn(id, pressed) {
+            const el = document.getElementById(id);
+            if (pressed) el.classList.add('active');
+            else el.classList.remove('active');
+        }
+    </script>
+</body>
+</html>

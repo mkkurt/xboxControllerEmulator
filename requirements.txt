@@ -1,0 +1,7 @@
+PyQt6
+hidapi
+websockets
+requests
+Pillow
+pyinstaller
+py2app

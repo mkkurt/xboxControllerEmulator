@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="CloudPad.ControllerEmulator"
+    Publisher="CN=CloudPad"
+    Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>CloudPad</DisplayName>
+    <PublisherDisplayName>CloudPad Team</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="humaninterfacedevice">
+        <Device Id="any">
+            <Function Type="usage:0001 0004"/> <!-- Joystick -->
+            <Function Type="usage:0001 0005"/> <!-- Gamepad -->
+        </Device>
+    </DeviceCapability>
+  </Capabilities>
+
+  <Applications>
+    <Application Id="App"
+      Executable="CloudPad.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="CloudPad"
+        Description="Universal Cloud Gaming Controller Tool"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>

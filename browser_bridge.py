@@ -10,148 +10,137 @@ class BrowserBridge:
         self.loop = None
         self.thread = None
         self.running = False
+        self.server = None
 
     def start(self):
         self.running = True
-        self.thread = threading.Thread(target=self._run_server)
+        self.thread = threading.Thread(target=self._run_server, daemon=True)
         self.thread.start()
 
     def stop(self):
         self.running = False
-        # In a real app we'd signal the loop to stop, but for this simple script
-        # we'll just let the daemon thread die or rely on main exit.
-        pass
+        if self.loop and self.server:
+            self.loop.call_soon_threadsafe(self.server.close)
 
     def broadcast(self, state):
-        if not self.clients:
+        """
+        Broadcast controller state to all connected browsers
+        state format: {
+            'uid_buttons': int,
+            'uid_axis_0': float,
+            'uid_hat': int,
+            ...
+        }
+        """
+        if not self.clients or not state:
             return
         
-        # Convert state to standard Gamepad API format
-        # Mapping for MSFS 2024 (Xbox Controller Layout)
-        # Left Stick: Joystick X/Y (Pitch/Roll)
-        # Right Stick: Throttle (mapped to Y axis?) or Camera. 
-        # Let's map Throttle to Triggers (LT/RT) for analog control.
-        # D-Pad: Hat Switch (POV 1)
-        # A: Trigger (Button 1) - Select / Fire
-        # B: Weapon Release (Button 2 - Red Button) - Back / Cancel
-        # X: Pinky Switch (Button 3) - Context 1
-        # Y: Paddle Switch (Button 4) - Context 2
-        
-        buttons_1 = state.get('buttons_1', 0)
-        hat = state.get('hat', -1)
-        
-        # Hat to D-Pad
-        dpad_up = hat == 0 or hat == 1 or hat == 7
-        dpad_right = hat == 1 or hat == 2 or hat == 3
-        dpad_down = hat == 3 or hat == 4 or hat == 5
-        dpad_left = hat == 5 or hat == 6 or hat == 7
-        
-        # Expanded Button Mapping
-        # Xbox Controller: A, B, X, Y, LB, RB, LT, RT, Back, Start, L3, R3, D-Pad
-        
-        # Map Warthog Buttons (buttons_1 and buttons_2)
-        # buttons_1: Trigger (1), Release (2), Pinky (4), Paddle (8), etc.
-        # buttons_2: More buttons
-        
-        btn1 = state.get('buttons_1', 0)
-        btn2 = state.get('buttons_2', 0)
-        
-        gamepad_data = {
-            "axes": [
-                state.get('joy_x', 0), # Left Stick X
-                state.get('joy_y', 0), # Left Stick Y
-                # Map Throttle to Right Stick Y for camera/other control if needed, or just keep 0
-                0.0, # Right Stick X
-                state.get('throttle_left', 0) * 2 - 1, # Right Stick Y (Mapped from Throttle L, -1 to 1)
-            ],
-            "buttons": [
-                {"pressed": (btn1 & 0x01) > 0, "value": 1.0 if (btn1 & 0x01) else 0.0}, # A (Trigger)
-                {"pressed": (btn1 & 0x02) > 0, "value": 1.0 if (btn1 & 0x02) else 0.0}, # B (Weapon Release)
-                {"pressed": (btn1 & 0x04) > 0, "value": 1.0 if (btn1 & 0x04) else 0.0}, # X (Pinky)
-                {"pressed": (btn1 & 0x08) > 0, "value": 1.0 if (btn1 & 0x08) else 0.0}, # Y (Paddle)
-                {"pressed": (btn1 & 0x10) > 0, "value": 1.0 if (btn1 & 0x10) else 0.0}, # LB (Button 5)
-                {"pressed": (btn1 & 0x20) > 0, "value": 1.0 if (btn1 & 0x20) else 0.0}, # RB (Button 6)
-                {"pressed": state.get('throttle_left', 0) > 0.1, "value": state.get('throttle_left', 0)}, # LT (Throttle L)
-                {"pressed": state.get('throttle_right', 0) > 0.1, "value": state.get('throttle_right', 0)}, # RT (Throttle R)
-                {"pressed": (btn2 & 0x01) > 0, "value": 1.0 if (btn2 & 0x01) else 0.0}, # Back (Button 9)
-                {"pressed": (btn2 & 0x02) > 0, "value": 1.0 if (btn2 & 0x02) else 0.0}, # Start (Button 10)
-                {"pressed": (btn2 & 0x04) > 0, "value": 1.0 if (btn2 & 0x04) else 0.0}, # L3 (Button 11)
-                {"pressed": (btn2 & 0x08) > 0, "value": 1.0 if (btn2 & 0x08) else 0.0}, # R3 (Button 12)
-                {"pressed": dpad_up, "value": 1.0 if dpad_up else 0.0}, # Up
-                {"pressed": dpad_down, "value": 1.0 if dpad_down else 0.0}, # Down
-                {"pressed": dpad_left, "value": 1.0 if dpad_left else 0.0}, # Left
-                {"pressed": dpad_right, "value": 1.0 if dpad_right else 0.0}, # Right
-                {"pressed": False, "value": 0}, # Home
-            ]
-        }
-        
+        # Convert universal state to Xbox gamepad format
+        gamepad_data = self._convert_to_gamepad(state)
         message = json.dumps(gamepad_data)
+        
         if self.loop:
-            # print(f"DEBUG: Broadcasting to {len(self.clients)} clients")
-            future = asyncio.run_coroutine_threadsafe(self._broadcast_message(message), self.loop)
-            # Optional: Check for immediate errors (though it's async)
-            try:
-                future.result(timeout=0.001)
-            except asyncio.TimeoutError:
-                pass # Expected, it takes time
-            except Exception as e:
-                print(f"DEBUG: Future error: {e}")
-        else:
-            print("DEBUG: No event loop!")
+            asyncio.run_coroutine_threadsafe(
+                self._send_to_all(message), 
+                self.loop
+            )
 
-    async def _broadcast_message(self, message):
-        # print(f"DEBUG: _broadcast_message running. Clients: {len(self.clients)}")
-        if self.clients:
-            # DEBUG: Inspect the first client to see what it is (one-time debug)
-            # first_client = next(iter(self.clients))
-            # print(f"DEBUG: Client attributes: {dir(first_client)}")
+    def _convert_to_gamepad(self, state):
+        """
+        Convert universal device state to standard Gamepad API format
+        This is a smart converter that works with any configured device
+        """
+        # Initialize gamepad structure
+        gamepad = {
+            'axes': [0.0, 0.0, 0.0, 0.0],
+            'buttons': [{'pressed': False, 'value': 0.0} for _ in range(17)]
+        }
 
-            # Safe filtering to avoid AttributeError
-            active_clients = set()
-            for c in self.clients:
-                try:
-                    # Check for 'open' or 'closed' attributes safely
-                    if hasattr(c, 'open') and c.open:
-                        active_clients.add(c)
-                    elif hasattr(c, 'closed') and not c.closed:
-                        active_clients.add(c)
-                    elif hasattr(c, 'state'): # Check state if available
-                        # 1 = OPEN
-                        if c.state == 1: 
-                            active_clients.add(c)
+        # Map buttons from UniversalInputReader state
+        # The state now contains keys like '{uid}_btn_A', '{uid}_btn_B', etc.
+
+        button_map = {
+            'A': 0, 'B': 1, 'X': 2, 'Y': 3,
+            'LB': 4, 'RB': 5,
+            'Back': 8, 'Start': 9,
+            'L3': 10, 'R3': 11,
+            'Guide': 16
+        }
+
+        # Iterate over all state keys to find button presses
+        for key, value in state.items():
+            if '_btn_' in key:
+                # Extract button name (e.g., 'A' from '1234:5678_btn_A')
+                btn_name = key.split('_btn_')[1]
+                
+                if btn_name in button_map:
+                    idx = button_map[btn_name]
+                    pressed = bool(value)
+                    # OR with existing state to support multiple controllers mapping to same button
+                    if pressed:
+                        gamepad['buttons'][idx] = {'pressed': True, 'value': 1.0}
+        
+        # Map axes - Universal mapping based on calibrated axis names
+        # Standard Xbox controller layout:
+        # axes[0] = Left Stick X, axes[1] = Left Stick Y
+        # axes[2] = Right Stick X, axes[3] = Right Stick Y
+        # buttons[6] = Left Trigger (LT), buttons[7] = Right Trigger (RT)
+
+        axis_map = {
+            'LeftX': 0,
+            'LeftY': 1,
+            'RightX': 2,
+            'RightY': 3,
+            'LT': 6,  # Left Trigger as button
+            'RT': 7   # Right Trigger as button
+        }
+
+        for key, value in state.items():
+            # Check for calibrated axis names (format: uid_AxisName)
+            for axis_name, gamepad_index in axis_map.items():
+                if f'_{axis_name}' in key:
+                    if axis_name in ['LT', 'RT']:
+                        # Triggers are buttons with analog values (0.0 to 1.0)
+                        val = max(0.0, min(1.0, value))
+                        gamepad['buttons'][gamepad_index] = {'pressed': val > 0.1, 'value': val}
                     else:
-                        # Fallback: assume open if we can't check, to avoid dropping valid connections
-                        # print("DEBUG: Could not determine client state, assuming open")
-                        active_clients.add(c)
-                except Exception as e:
-                    print(f"DEBUG: Error checking client state: {e}")
-                    active_clients.add(c) # Keep on error to be safe
+                        # Stick axes
+                        gamepad['axes'][gamepad_index] = float(value)
+        
+        # Map D-Pad from hat
+        for key, value in state.items():
+            if '_hat' in key and isinstance(value, int):
+                hat = value
+                gamepad['buttons'][12] = {'pressed': hat in [0, 1, 7], 'value': 1.0 if hat in [0, 1, 7] else 0.0}  # Up
+                gamepad['buttons'][13] = {'pressed': hat in [3, 4, 5], 'value': 1.0 if hat in [3, 4, 5] else 0.0}  # Down
+                gamepad['buttons'][14] = {'pressed': hat in [5, 6, 7], 'value': 1.0 if hat in [5, 6, 7] else 0.0}  # Left
+                gamepad['buttons'][15] = {'pressed': hat in [1, 2, 3], 'value': 1.0 if hat in [1, 2, 3] else 0.0}  # Right
+        
+        return gamepad
 
-            self.clients = active_clients
-            
-            if self.clients:
-                # print(f"DEBUG: Sending to {len(self.clients)} clients")
-                try:
-                    await asyncio.gather(*[client.send(message) for client in self.clients], return_exceptions=True)
-                except Exception as e:
-                    print(f"DEBUG: Send error: {e}")
-                except Exception as e:
-                    print(f"DEBUG: Send error: {e}")
+    async def _send_to_all(self, message):
+        if self.clients:
+            await asyncio.gather(
+                *[client.send(message) for client in self.clients],
+                return_exceptions=True
+            )
 
     def _run_server(self):
-        asyncio.run(self._async_server())
-
-    async def _async_server(self):
-        self.loop = asyncio.get_running_loop()
-        print(f"Browser Bridge running on ws://127.0.0.1:{self.port}")
-        async with websockets.serve(self._handler, "127.0.0.1", self.port):
-            await asyncio.Future() # Run forever
-
-    async def _handler(self, websocket):
-        print("DEBUG: Client connected!")
-        self.clients.add(websocket)
-        try:
-            await websocket.wait_closed()
-        finally:
-            print("DEBUG: Client disconnected!")
-            self.clients.remove(websocket)
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        
+        async def handler(websocket):
+            self.clients.add(websocket)
+            print("DEBUG: Client connected!")
+            try:
+                await websocket.wait_closed()
+            finally:
+                self.clients.remove(websocket)
+                print("DEBUG: Client disconnected!")
+        
+        async def serve():
+            self.server = await websockets.serve(handler, "127.0.0.1", self.port)
+            print(f"Browser Bridge running on ws://127.0.0.1:{self.port}")
+            await asyncio.Future()  # run forever
+        
+        self.loop.run_until_complete(serve())

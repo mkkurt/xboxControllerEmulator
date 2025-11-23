@@ -1,0 +1,45 @@
+# CloudPad Firefox Extension
+# Manifest V2 for Firefox compatibility
+
+{
+  "manifest_version": 2,
+  "name": "CloudPad - Virtual Gamepad",
+  "version": "1.0.0",
+  "description": "Transform any controller into an Xbox controller for cloud gaming",
+  
+  "icons": {
+    "48": "icon48.png",
+    "96": "icon96.png"
+  },
+  
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon48.png"
+    }
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.xbox.com/*",
+        "*://*.xbox.com/*",
+        "*://play.geforcenow.com/*",
+        "*://*.geforcenow.com/*",
+        "*://luna.amazon.com/*",
+        "*://*.luna.amazon.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  
+  "permissions": [
+    "activeTab"
+  ],
+  
+  "web_accessible_resources": [
+    "gamepad-injector.js"
+  ]
+}

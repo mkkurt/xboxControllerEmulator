@@ -8,6 +8,20 @@ class InputReader:
     JOYSTICK_ID = 0x0402
     THROTTLE_ID = 0x0404
 
+    # Default Mappings (can be tweaked)
+    MAPPING = {
+        'joystick': {
+            'x': {'offset': 4, 'size': 2, 'signed': False, 'min': 0, 'max': 65535, 'center': 32768, 'deadzone': 0.05},
+            'y': {'offset': 6, 'size': 2, 'signed': False, 'min': 0, 'max': 65535, 'center': 32768, 'deadzone': 0.05},
+        },
+        'throttle': {
+            'slew_x': {'offset': 6, 'size': 2, 'min': 0, 'max': 1023, 'center': 512, 'deadzone': 0.05},
+            'slew_y': {'offset': 8, 'size': 2, 'min': 0, 'max': 1023, 'center': 512, 'deadzone': 0.05},
+            'left': {'offset': 14, 'size': 2, 'min': 0, 'max': 16383, 'center': None, 'deadzone': 0.01},
+            'right': {'offset': 12, 'size': 2, 'min': 0, 'max': 16383, 'center': None, 'deadzone': 0.01}
+        }
+    }
+
     def __init__(self):
         self.joystick = None
         self.throttle = None
@@ -15,15 +29,19 @@ class InputReader:
         self.state = {
             'joy_x': 0.0, # -1.0 to 1.0
             'joy_y': 0.0, # -1.0 to 1.0
+            'slew_x': 0.0, # -1.0 to 1.0
+            'slew_y': 0.0, # -1.0 to 1.0
             'throttle_left': 0.0, # 0.0 to 1.0
             'throttle_right': 0.0, # 0.0 to 1.0
-            'buttons': [] # List of active button IDs
+            'buttons': 0, # Joystick Buttons
+            'thr_buttons': 0, # Throttle Buttons
+            'hat': -1
         }
         self.lock = threading.Lock()
+        self.debug_mode = False # Enable to print raw data
 
     def start(self):
         self.running = True
-        # self._connect() # Moved to thread
         self.thread = threading.Thread(target=self._read_loop)
         self.thread.start()
 
@@ -31,8 +49,6 @@ class InputReader:
         self.running = False
         if self.thread:
             self.thread.join()
-        # Closing handled in thread loop or here if needed, but better in thread cleanup
-        pass
 
     def get_state(self):
         with self.lock:
@@ -46,11 +62,10 @@ class InputReader:
             print(f"{name} connected.")
             return dev
         except Exception as e:
-            print(f"Failed to connect {name}: {e}")
+            # print(f"Failed to connect {name}: {e}")
             return None
 
     def _read_loop(self):
-        # Connect in the same thread
         self.joystick = self._connect_device(self.VENDOR_ID, self.JOYSTICK_ID, "Joystick")
         self.throttle = self._connect_device(self.VENDOR_ID, self.THROTTLE_ID, "Throttle")
 
@@ -59,105 +74,126 @@ class InputReader:
                 try:
                     data = self.joystick.read(64)
                     if data:
-                        # DEBUG: Print raw data occasionally to verify offsets
-                        # if time.time() % 1.0 < 0.05:
-                        #    print(f"JOY RAW: {data[:16]}")
+                        # DEBUG: Print raw joystick data periodically
+                        if self.debug_mode and time.time() % 2.0 < 0.05:
+                           print(f"JOY RAW: {[hex(x) for x in data[:16]]}")
                         self._parse_joystick(data)
-                except Exception as e:
-                    # print(f"Joystick read error: {e}")
-                    pass # Suppress spam
+                except Exception:
+                    pass
             
             if self.throttle:
                 try:
                     data = self.throttle.read(64)
                     if data:
-                        # DEBUG: Print raw throttle data
-                        if time.time() % 1.0 < 0.1: # Limit spam
-                           print(f"THR RAW: {[hex(x) for x in data[:12]]}")
+                        # DEBUG: Print raw throttle data periodically
+                        if self.debug_mode and time.time() % 2.0 < 0.05:
+                           print(f"THR RAW: {[hex(x) for x in data[:16]]}")
                         self._parse_throttle(data)
-                except Exception as e:
-                    # print(f"Throttle read error: {e}")
+                except Exception:
                     pass
             
             time.sleep(0.005) # 200Hz
         
-        # Cleanup
         if self.joystick: self.joystick.close()
         if self.throttle: self.throttle.close()
 
     def _parse_joystick(self, data):
-        # DEBUG: Print raw hex to debug jitter and hat switch
-        # print(f"JOY RAW: {[hex(x) for x in data[:12]]}")
-        
         # Bytes 0: Report ID
         # Bytes 1-2: Buttons
-        # Byte 3: Hat Switch (0xF0 = Center, 0x00=Up, 0x02=Right, etc.)
-        # Bytes 4-5: X Axis (16-bit little endian)
-        # Bytes 6-7: Y Axis (16-bit little endian)
+        # Byte 3: Hat Switch
+        # Bytes 4-5: X Axis
+        # Bytes 6-7: Y Axis
 
-        # Parse Buttons
-        buttons_1 = data[1]
-        buttons_2 = data[2]
+        # Parse Buttons (Simple bitmask for now)
+        buttons = (data[2] << 8) | data[1]
 
         # Parse Hat
-        # Standard HID Hat: 0=Up, 1=UpRight, 2=Right, 3=DownRight, 4=Down, 5=DownLeft, 6=Left, 7=UpLeft
-        # Warthog might use 0, 2, 4, 6 for main directions.
+        # Warthog Hat seems to be in the High Nibble (0x00=Up, 0x20=Right, 0x40=Down, 0x60=Left)
+        # 0xF0 is Neutral.
         hat_raw = data[3]
-        hat_val = -1
+        hat_dir = (hat_raw >> 4) & 0x0F # Shift right 4 bits to get 0-15
         
-        # Check if Hat is centered (usually 0xF0 or 0x0F or 0x80 depending on implementation)
-        # Based on logs, 0xF0 seems to be the resting state.
-        if (hat_raw & 0xF0) == 0xF0:
+        if hat_dir > 7: # 8-15 are neutral/unused (0xF is typical neutral)
             hat_val = -1
         else:
-            hat_val = hat_raw & 0x0F
+            hat_val = hat_dir
 
-        # Parse Axes
-        # Little Endian: Low Byte, High Byte
-        raw_x = (data[5] << 8) | data[4]
-        raw_y = (data[7] << 8) | data[6]
+        # Parse Axes using Mapping
+        map_x = self.MAPPING['joystick']['x']
+        map_y = self.MAPPING['joystick']['y']
 
-        # Normalize to -1.0 to 1.0
-        # 0x0000 = 0, 0x8000 = 32768 (Center), 0xFFFF = 65535
-        norm_x = (raw_x - 32768) / 32768.0
-        norm_y = (raw_y - 32768) / 32768.0
+        raw_x = self._read_axis(data, map_x['offset'], map_x['size'])
+        raw_y = self._read_axis(data, map_y['offset'], map_y['size'])
 
-        # Clamp
-        norm_x = max(-1.0, min(1.0, norm_x))
-        norm_y = max(-1.0, min(1.0, norm_y))
+        norm_x = self._normalize(raw_x, map_x['min'], map_x['max'], map_x['center'], map_x['deadzone'])
+        norm_y = self._normalize(raw_y, map_y['min'], map_y['max'], map_y['center'], map_y['deadzone'])
 
         with self.lock:
             self.state['joy_x'] = norm_x
             self.state['joy_y'] = norm_y
-            self.state['buttons_1'] = buttons_1
-            self.state['buttons_2'] = buttons_2
+            self.state['buttons'] = buttons
             self.state['hat'] = hat_val
 
     def _parse_throttle(self, data):
-        # Throttle Data (12 bytes)
+        # Throttle Data
         # Byte 0: Report ID
-        # Bytes 1-5: Buttons/Switches/Hat
-        # Bytes 6-7: Left Throttle (16-bit Little Endian, but effectively 10-bit range 0-1023?)
-        # Bytes 8-9: Right Throttle (16-bit Little Endian)
+        # Bytes 1-5: Buttons (5 bytes of buttons!)
+        # Bytes 6-7: Slew X
+        # Bytes 8-9: Slew Y
+        # Bytes 10-11: ?
+        # Bytes 12-13: Left Throttle
+        # Bytes 14-15: Right Throttle
+
+        # Parse Buttons
+        # Combine bytes 1-5 into a large integer
+        thr_buttons = 0
+        for i in range(5):
+            if 1 + i < len(data):
+                thr_buttons |= (data[1 + i] << (8 * i))
+
+        map_sx = self.MAPPING['throttle']['slew_x']
+        map_sy = self.MAPPING['throttle']['slew_y']
+        map_l = self.MAPPING['throttle']['left']
+        map_r = self.MAPPING['throttle']['right']
+
+        raw_sx = self._read_axis(data, map_sx['offset'], map_sx['size'])
+        raw_sy = self._read_axis(data, map_sy['offset'], map_sy['size'])
+        raw_l = self._read_axis(data, map_l['offset'], map_l['size'])
+        raw_r = self._read_axis(data, map_r['offset'], map_r['size'])
+
+        norm_sx = self._normalize(raw_sx, map_sx['min'], map_sx['max'], map_sx['center'], map_sx['deadzone'])
+        norm_sy = self._normalize(raw_sy, map_sy['min'], map_sy['max'], map_sy['center'], map_sy['deadzone'])
         
-        # Parse Axes
-        # Little Endian
-        raw_left = (data[7] << 8) | data[6]
-        raw_right = (data[9] << 8) | data[8]
-        
-        # Normalize
-        # Observed range: ~75 to ~631, Center ~512.
-        # This suggests a 10-bit axis (0-1023) or similar.
-        # Let's normalize 0-1023 to 0.0-1.0.
-        # If values exceed 1023, it will clamp.
-        
-        norm_l = raw_left / 1023.0
-        norm_r = raw_right / 1023.0
-        
-        # Clamp
-        norm_l = max(0.0, min(1.0, norm_l))
-        norm_r = max(0.0, min(1.0, norm_r))
+        # Throttle is 0-16383, normalize to 0.0-1.0
+        # Invert so that full throttle = 1.0 (not 0.0)
+        norm_l = max(0.0, min(1.0, 1.0 - (raw_l / 16383.0)))
+        norm_r = max(0.0, min(1.0, 1.0 - (raw_r / 16383.0)))
         
         with self.lock:
+            self.state['slew_x'] = norm_sx
+            self.state['slew_y'] = norm_sy
             self.state['throttle_left'] = norm_l
             self.state['throttle_right'] = norm_r
+            self.state['thr_buttons'] = thr_buttons
+
+    def _read_axis(self, data, offset, size):
+        if offset + size > len(data):
+            return 0
+        val = 0
+        for i in range(size):
+            val |= (data[offset + i] << (8 * i))
+        return val
+
+    def _normalize(self, val, min_val, max_val, center, deadzone):
+        # Center the value
+        val -= center
+        
+        # Apply deadzone
+        if abs(val) < (max_val - min_val) * deadzone:
+            return 0.0
+            
+        # Normalize to -1.0 to 1.0
+        if val > 0:
+            return min(1.0, val / (max_val - center))
+        else:
+            return max(-1.0, val / (center - min_val))
