@@ -18,6 +18,9 @@ class CalibrationLogic:
         # Detected axes: list of byte indices that are confirmed as axes
         self.detected_axes = set()
         
+        # Noisy axes: list of byte indices that have movement but not enough to be an axis
+        self.noisy_axes = set()
+
         # Baseline data for noise filtering
         self.baseline_data = None
         
@@ -67,22 +70,20 @@ class CalibrationLogic:
         Returns a dictionary of axis configurations.
         """
         final_axes = {}
+        self.noisy_axes.clear()
         
         for i, stats in self.axis_data.items():
             total_range = stats['max'] - stats['min']
             
             # Threshold to consider something an axis
-            # A real axis should move significantly (e.g. > 20 values in 0-255 range)
-            if total_range > 20:
+            # Increased to 80 to ensure only real axes are detected
+            if total_range > 80:
                 self.detected_axes.add(i)
                 
-                # Calculate center more accurately if possible
-                # For now, we'll assume the initial value was roughly center
-                # or the average of min/max if it looks like a full range axis
-                center = stats['center']
+                # Calculate center more accurately
+                center = (stats['min'] + stats['max']) // 2
                 
                 # Calculate deadzone based on noise at center
-                # This is a simplification; a real implementation might track center jitter separately
                 deadzone = 0.05 # Default 5%
                 
                 final_axes[i] = {
@@ -91,6 +92,10 @@ class CalibrationLogic:
                     'center': center,
                     'deadzone': deadzone
                 }
+            elif total_range > 5:
+                # Range is small (5-80), likely noise or jittery unused pin
+                # Mark as noisy so we don't detect it as a button later
+                self.noisy_axes.add(i)
                 
         return final_axes
 
@@ -105,8 +110,11 @@ class CalibrationLogic:
             self.baseline_data = data
             return None
 
-        # Combine all axes to ignore
+        # Combine all axes/bytes to ignore
         axes_to_ignore = set(self.detected_axes)
+        # Also ignore identified noisy bytes
+        axes_to_ignore.update(self.noisy_axes)
+
         if mapped_axes:
             axes_to_ignore.update(mapped_axes)
 
@@ -188,8 +196,8 @@ class CalibrationLogic:
             deviation = abs(current_val - center)
             percent_deviation = deviation / total_range
 
-            # Require 30% deviation to avoid noise (increased from 15%)
-            if percent_deviation > 0.30:
+            # Require 30% deviation AND > 20 absolute units
+            if percent_deviation > 0.30 and deviation > 20:
                 if percent_deviation > max_deviation:
                     max_deviation = percent_deviation
                     best_candidate = (i, current_val)
