@@ -335,9 +335,12 @@ class SimpleCalibrationDialog(QDialog):
         self.status_label.setText("Waiting for movement...")
         self.status_label.setStyleSheet("color: #f9e2af;")
 
-        # Reset baseline
+        # Reset baseline - will collect 10 samples to average
         self.logic.baseline_data = None
-        self.last_detection_time = 0
+        self.logic.baseline_samples = []
+        
+        # Start time for detection
+        self.last_detection_time = time.time()
 
     def start_button_mapping(self):
         """Begin the button mapping process"""
@@ -395,7 +398,9 @@ class SimpleCalibrationDialog(QDialog):
             elif self.step == 1 and self.waiting_for_input:
                 # Axis mapping
                 current_time = time.time()
-                if current_time - self.last_detection_time < 1.0:
+                
+                # Brief delay while collecting baseline samples
+                if current_time - self.last_detection_time < 0.2:
                     return
 
                 # Get all axis bytes we've detected
@@ -427,6 +432,16 @@ class SimpleCalibrationDialog(QDialog):
                     self.last_detection_time = current_time
                     self.axis_map_index += 1
                     QTimer.singleShot(800, self.next_axis_mapping)
+                else:
+                    # Debug: show movement candidates if any detected but below threshold
+                    if hasattr(self.logic, 'last_movement_candidates') and self.logic.last_movement_candidates:
+                        candidates = self.logic.last_movement_candidates
+                        if len(candidates) > 0:
+                            # Show the best candidate
+                            best = max(candidates, key=lambda x: x[2])
+                            byte_idx, movement, percent = best
+                            self.status_label.setText(f"Movement detected: {percent*100:.1f}% (need 15%)\nMove further!")
+                            self.status_label.setStyleSheet("color: #f9e2af;")
 
             elif self.step == 2 and self.waiting_for_input:
                 # Button mapping

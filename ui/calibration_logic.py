@@ -23,6 +23,7 @@ class CalibrationLogic:
 
         # Baseline data for noise filtering
         self.baseline_data = None
+        self.baseline_samples = []  # Store multiple samples for averaging
         
         # Button mappings: name -> byte_index
         self.button_mappings = {}
@@ -171,35 +172,57 @@ class CalibrationLogic:
 
     def detect_axis_movement(self, raw_data, axes_config, excluded_axes=None):
         """
-        Detect which axis is being moved significantly.
+        Detect which axis is being moved significantly relative to averaged baseline.
         Returns (byte_index, value) or None.
         """
         data = bytes(raw_data)
+        
+        # Collect baseline samples (first 10 reads)
+        if len(self.baseline_samples) < 10:
+            self.baseline_samples.append(data)
+            if len(self.baseline_samples) == 10:
+                # Calculate averaged baseline
+                averaged = []
+                for byte_idx in range(len(data)):
+                    avg_val = sum(sample[byte_idx] for sample in self.baseline_samples) // 10
+                    averaged.append(avg_val)
+                self.baseline_data = bytes(averaged)
+            return None  # Still collecting baseline
+            
         excluded = excluded_axes or set()
         
         best_candidate = None
         max_deviation = 0.0
+        
+        # Track all candidates for debugging
+        candidates = []
         
         for i, config in axes_config.items():
             if i in excluded:
                 continue
                 
             current_val = data[i]
-            center = config['center']
-            min_val = config['min']
-            max_val = config['max']
+            baseline_val = self.baseline_data[i]
             
-            # Range of this axis
-            total_range = max_val - min_val
+            # Range of this axis from calibration
+            total_range = config['max'] - config['min']
             if total_range == 0: continue
             
-            deviation = abs(current_val - center)
-            percent_deviation = deviation / total_range
+            # Calculate movement from averaged baseline
+            movement = abs(int(current_val) - int(baseline_val))
+            percent_movement = movement / total_range
+            
+            # Track candidates
+            if percent_movement > 0.10:  # Track anything above 10%
+                candidates.append((i, movement, percent_movement))
 
-            # Require 30% deviation AND > 20 absolute units
-            if percent_deviation > 0.30 and deviation > 20:
-                if percent_deviation > max_deviation:
-                    max_deviation = percent_deviation
+            # Require 15% movement to detect
+            if percent_movement > 0.15:
+                if percent_movement > max_deviation:
+                    max_deviation = percent_movement
                     best_candidate = (i, current_val)
+        
+        # Store for debugging
+        self.last_movement_candidates = candidates
         
         return best_candidate
