@@ -34,7 +34,16 @@ class SimpleCalibrationDialog(QDialog):
 
         # Detection state
         self.waiting_for_input = False
+        self.detection_enabled = False  # Gatekeeper for input processing
         self.current_target = None  # What we're currently trying to detect
+        self.last_detection_time = 0
+
+        # Timers
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.process_input)
+
+        self.ready_timer = QTimer()
+        self.ready_timer.setSingleShot(True)
 
         # Step definitions
         self.steps = [
@@ -208,10 +217,6 @@ class SimpleCalibrationDialog(QDialog):
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
-        # Input reading timer
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.process_input)
-
     def init_device(self):
         """Initialize and open the device"""
         self.devices = self.device_manager.scan_devices()
@@ -257,6 +262,7 @@ class SimpleCalibrationDialog(QDialog):
 
         # Reset state
         self.waiting_for_input = False
+        self.detection_enabled = False
         self.skip_btn.hide()
 
         # Start timer for step 1 (axis calibration)
@@ -294,6 +300,9 @@ class SimpleCalibrationDialog(QDialog):
 
     def on_skip_clicked(self):
         """Skip current axis/button"""
+        # Cancel any pending ready timer
+        self.ready_timer.stop()
+
         if self.step == 1:
             # Skip axis
             self.axis_map_index += 1
@@ -314,6 +323,9 @@ class SimpleCalibrationDialog(QDialog):
 
     def next_axis_mapping(self):
         """Show next axis to map"""
+        # Stop any pending timer
+        self.ready_timer.stop()
+
         if self.axis_map_index >= len(self.xbox_axes):
             # Done with axes
             self.timer.stop()
@@ -331,11 +343,28 @@ class SimpleCalibrationDialog(QDialog):
         pretty_name, internal_name = self.xbox_axes[self.axis_map_index]
         self.current_target = internal_name
 
-        self.instruction_label.setText(f"Move or press:\n{pretty_name}")
-        self.status_label.setText("Waiting for movement...")
+        self.instruction_label.setText(f"Move or press:\n{pretty_name}\n\n(Ready in 1 second...)")
+        self.status_label.setText("Preparing...")
         self.status_label.setStyleSheet("color: #f9e2af;")
 
-        # Reset baseline
+        # Disable detection
+        self.detection_enabled = False
+
+        # Start countdown
+        try:
+            self.ready_timer.timeout.disconnect()
+        except TypeError:
+            pass # Not connected
+
+        self.ready_timer.timeout.connect(self.enable_axis_detection)
+        self.ready_timer.start(1000)
+
+    def enable_axis_detection(self):
+        """Enable axis detection after delay"""
+        pretty_name, _ = self.xbox_axes[self.axis_map_index]
+        self.instruction_label.setText(f"Move or press:\n{pretty_name}\n\n✓ Ready! Move now.")
+        self.status_label.setText("Waiting for movement...")
+        self.detection_enabled = True
         self.logic.baseline_data = None
         self.last_detection_time = 0
 
@@ -350,6 +379,9 @@ class SimpleCalibrationDialog(QDialog):
 
     def next_button_mapping(self):
         """Show next button to map"""
+        # Stop any pending timer
+        self.ready_timer.stop()
+
         if self.button_map_index >= len(self.xbox_buttons):
             # Done with buttons
             self.timer.stop()
@@ -367,15 +399,41 @@ class SimpleCalibrationDialog(QDialog):
         btn_name = self.xbox_buttons[self.button_map_index]
         self.current_target = btn_name
 
-        self.instruction_label.setText(f"Press button:\n{btn_name}\n\n(Don't move sticks!)")
-        self.status_label.setText("Waiting for button press...")
+        self.instruction_label.setText(f"Press button:\n{btn_name}\n\n(Ready in 1 second...)\nRelease all buttons!")
+        self.status_label.setText("Preparing...")
         self.status_label.setStyleSheet("color: #f9e2af;")
 
-        # Capture fresh baseline
-        data = self.hid_device.read(64)
-        if data:
-            self.logic.baseline_data = bytes(data)
+        # Disable detection
+        self.detection_enabled = False
 
+        # Start countdown
+        try:
+            self.ready_timer.timeout.disconnect()
+        except TypeError:
+            pass
+
+        self.ready_timer.timeout.connect(self.enable_button_detection)
+        self.ready_timer.start(1000)
+
+    def enable_button_detection(self):
+        """Enable button detection after delay"""
+        btn_name = self.xbox_buttons[self.button_map_index]
+
+        # Capture fresh baseline NOW (when user is presumably NOT pressing anything)
+        if self.hid_device:
+            try:
+                data = self.hid_device.read(64)
+                if data:
+                    self.logic.baseline_data = bytes(data)
+                    # Debug log first few bytes
+                    hex_str = ' '.join(f'{b:02x}' for b in data[:8])
+                    # self.log(f"Baseline: [{hex_str}...]")
+            except Exception as e:
+                self.log(f"Baseline error: {e}")
+
+        self.instruction_label.setText(f"Press button:\n{btn_name}\n\n(Don't move sticks!)\n✓ Ready! Press now.")
+        self.status_label.setText("Waiting for button press...")
+        self.detection_enabled = True
         self.last_detection_time = 0
 
     def process_input(self):
@@ -389,13 +447,14 @@ class SimpleCalibrationDialog(QDialog):
                 return
 
             if self.step == 0:
-                # Axis calibration
+                # Axis calibration (always enabled during this step)
                 self.logic.process_axis_calibration(data)
 
             elif self.step == 1 and self.waiting_for_input:
                 # Axis mapping
-                current_time = time.time()
-                if current_time - self.last_detection_time < 1.0:
+
+                # Must be enabled (after delay)
+                if not self.detection_enabled:
                     return
 
                 # Get all axis bytes we've detected
@@ -424,14 +483,17 @@ class SimpleCalibrationDialog(QDialog):
                     self.status_label.setText(f"✓ Detected!")
                     self.status_label.setStyleSheet("color: #a6e3a1;")
 
-                    self.last_detection_time = current_time
+                    # Disable detection immediately to prevent double-mapping
+                    self.detection_enabled = False
+
                     self.axis_map_index += 1
                     QTimer.singleShot(800, self.next_axis_mapping)
 
             elif self.step == 2 and self.waiting_for_input:
                 # Button mapping
-                current_time = time.time()
-                if current_time - self.last_detection_time < 1.0:
+
+                # Must be enabled (after delay)
+                if not self.detection_enabled:
                     return
 
                 # Get all mapped axis bytes to exclude
@@ -449,7 +511,9 @@ class SimpleCalibrationDialog(QDialog):
                     self.status_label.setText(f"✓ Detected!")
                     self.status_label.setStyleSheet("color: #a6e3a1;")
 
-                    self.last_detection_time = current_time
+                    # Disable detection immediately
+                    self.detection_enabled = False
+
                     self.button_map_index += 1
                     QTimer.singleShot(800, self.next_button_mapping)
 
@@ -459,6 +523,7 @@ class SimpleCalibrationDialog(QDialog):
     def finish_calibration(self):
         """Save configuration and finish"""
         self.timer.stop()
+        self.ready_timer.stop()
         if self.hid_device:
             self.hid_device.close()
 
